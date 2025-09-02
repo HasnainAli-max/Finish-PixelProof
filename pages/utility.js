@@ -16,6 +16,81 @@ const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 // This avoids the "buy a plan" flicker after payment.
 const SUB_CACHE_TTL_MS = 60 * 1000;
 
+/* -------------------- THEME HELPERS (GLOBAL) -------------------- */
+function applyThemeToDOM(isDark) {
+  try {
+    const root = document.documentElement;
+    root.classList.toggle('dark', !!isDark);
+    root.dataset.theme = isDark ? 'dark' : 'light';
+  } catch {}
+}
+function readInitialTheme() {
+  try {
+    // 1) Our boolean flag, if present
+    const raw = localStorage.getItem('pp_dark_bool');
+    if (raw === 'true' || raw === 'false') return raw === 'true';
+
+    // 2) Common string keys used elsewhere in the app
+    const stored =
+      localStorage.getItem('theme') ||
+      localStorage.getItem('color-theme') ||
+      (localStorage.getItem('pp_dark') === '1' ? 'dark' : '');
+
+    if (stored === 'dark') return true;
+    if (stored === 'light') return false;
+
+    // 3) Fallback to system
+    const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches;
+    return !!prefersDark;
+  } catch {
+    return false;
+  }
+}
+function persistTheme(isDark) {
+  try {
+    localStorage.setItem('pp_dark_bool', String(!!isDark));       // boolean flag you asked for
+    localStorage.setItem('pp_dark', isDark ? '1' : '0');          // legacy key in your codebase
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');     // used by other pages
+    localStorage.setItem('color-theme', isDark ? 'dark' : 'light');
+  } catch {}
+}
+function useGlobalTheme() {
+  const [darkMode, setDarkMode] = useState(false);
+
+  // Boot: read from storage / system once
+  useEffect(() => {
+    const initial = readInitialTheme();
+    setDarkMode(initial);
+    applyThemeToDOM(initial);
+
+    // Sync if another tab changes it
+    const onStorage = (e) => {
+      if (!e.key) return;
+      if (
+        e.key === 'pp_dark_bool' ||
+        e.key === 'pp_dark' ||
+        e.key === 'theme' ||
+        e.key === 'color-theme'
+      ) {
+        const next = readInitialTheme();
+        setDarkMode(next);
+        applyThemeToDOM(next);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // Persist & apply whenever it changes here
+  useEffect(() => {
+    persistTheme(darkMode);
+    applyThemeToDOM(darkMode);
+  }, [darkMode]);
+
+  return [darkMode, setDarkMode];
+}
+
+/* -------------------- UTIL HELPERS -------------------- */
 function getOrCreateSessionId() {
   try {
     let id = localStorage.getItem('pp_session_id');
@@ -87,7 +162,10 @@ export default function UtilityPage() {
   const [image2, setImage2] = useState(null);
   const [loading, setLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState(null);
-  const [darkMode, setDarkMode] = useState(false);
+
+  // 🔄 Global theme state (boolean flag stored in localStorage)
+  const [darkMode, setDarkMode] = useGlobalTheme();
+
   const [fileMeta, setFileMeta] = useState({});
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -118,20 +196,6 @@ export default function UtilityPage() {
   const closeModal = useCallback(() => setModal((m) => ({ ...m, open: false })), []);
 
   const [limitModalOpen, setLimitModalOpen] = useState(false);
-
-  // Theme
-  useEffect(() => {
-    try {
-      const s = localStorage.getItem('pp_dark');
-      if (s != null) setDarkMode(s === '1');
-    } catch {}
-  }, []);
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode);
-    try {
-      localStorage.setItem('pp_dark', darkMode ? '1' : '0');
-    } catch {}
-  }, [darkMode]);
 
   // Auth + quick seeds (cache + Firestore for banner/no-flicker)
   useEffect(() => {
@@ -688,7 +752,7 @@ export default function UtilityPage() {
           <h1 className="text-3xl font-bold text-purple-800 dark:text-purple-300">PixelProof</h1>
           <button
             className="bg-purple-100 dark:bg-purple-700 hover:bg-purple-200 dark:hover:bg-purple-600 p-2 rounded transition"
-            onClick={() => setDarkMode(!darkMode)}
+            onClick={() => setDarkMode((d) => !d)}
             title="Toggle theme"
           >
             {darkMode ? '🌙' : '☀️'}
