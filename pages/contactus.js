@@ -1,72 +1,71 @@
 // pages/contactus.js
+"use client";
+
 import Head from "next/head";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase/config";
 import Navbar from "@/components/Navbar";
 
-/* ---------------- Theme boot: keep user's theme on refresh ---------------- */
+/* ---------------- Theme boot & sync ---------------- */
 function useThemeBoot() {
   useEffect(() => {
-    try {
-      const root = document.documentElement;
-      const stored = localStorage.getItem("theme"); // expected: "dark" | "light"
-      if (stored === "dark") root.classList.add("dark");
-      else if (stored === "light") root.classList.remove("dark");
-      // If nothing stored, leave Tailwind’s system-default behavior
-    } catch {}
+    const apply = () => {
+      try {
+        const root = document.documentElement;
+        let stored =
+          localStorage.getItem("theme") ||
+          localStorage.getItem("color-theme") ||
+          root.dataset.theme ||
+          "";
+        stored = stored === "dark" ? "dark" : stored === "light" ? "light" : "";
+        if (!stored) {
+          const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+          stored = prefersDark ? "dark" : "light";
+          localStorage.setItem("theme", stored);
+        }
+        root.classList.toggle("dark", stored === "dark");
+        root.dataset.theme = stored;
+      } catch {}
+    };
+    apply();
+    const onStorage = (e) => { if (["theme","color-theme"].includes(e.key)) apply(); };
+    const onFocus = () => apply();
+    const onVisible = () => document.visibilityState === "visible" && apply();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 }
 
-/* ---------------- Modal (animated, close icon, backdrop/Esc to close) ---------------- */
+/* ---------------- Modal ---------------- */
 function Modal({ open, onClose, title, children, variant = "info" }) {
   const [show, setShow] = useState(false);
-
+  useEffect(() => { if (open) setShow(true); else { const t=setTimeout(()=>setShow(false),120); return ()=>clearTimeout(t);} }, [open]);
   useEffect(() => {
-    if (open) {
-      setShow(true);
-    } else {
-      // small delay to let close animation play
-      const t = setTimeout(() => setShow(false), 120);
-      return () => clearTimeout(t);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    function onKey(e) {
-      if (e.key === "Escape") onClose?.();
-    }
-    if (open) {
-      window.addEventListener("keydown", onKey);
-      return () => window.removeEventListener("keydown", onKey);
-    }
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    if (open) { window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }
   }, [open, onClose]);
-
   if (!open && !show) return null;
-
-  const ringColor =
-    variant === "error" ? "ring-red-500/20 border-red-200 dark:border-red-800"
-    : variant === "success" ? "ring-green-600/20 border-green-200 dark:border-green-800"
-    : "ring-blue-600/20 border-gray-200 dark:border-gray-800";
+  const color =
+    variant === "error" ? "text-red-600" :
+    variant === "success" ? "text-green-600" : "text-blue-600";
 
   return (
-    <div
-      aria-modal="true"
-      role="dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center"
-    >
-      {/* backdrop */}
+    <div aria-modal="true" role="dialog" className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className={`absolute inset-0 bg-black/40 transition-opacity ${open ? "opacity-100" : "opacity-0"}`} onClick={onClose}/>
       <div
-        className={`absolute inset-0 bg-black/40 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
-        onClick={onClose}
-      />
-      {/* card */}
-      <div
-        className={`relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border shadow-xl p-6 ring-1 ${ringColor}
-                    transition-all duration-150 ${open ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}
+        className={`relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-2xl
+                    ring-1 ring-gray-200 dark:ring-gray-700 border border-gray-200/70 dark:border-gray-700
+                    p-6 transition-all duration-150 ${open ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}
+        onClick={(e) => e.stopPropagation()}
       >
-        {/* Close icon */}
         <button
           onClick={onClose}
           aria-label="Close"
@@ -77,85 +76,142 @@ function Modal({ open, onClose, title, children, variant = "info" }) {
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
         </button>
-
-        {title ? (
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 pr-8">{title}</h2>
-        ) : null}
-        <div className="mt-2 text-sm text-gray-700 dark:text-gray-200">{children}</div>
-
+        {title ? <h2 className={`text-lg font-semibold pr-8 ${color}`}>{title}</h2> : null}
+        <div className="mt-3 text-sm text-gray-800 dark:text-gray-200">{children}</div>
         <div className="mt-5 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            OK
-          </button>
+          <button onClick={onClose} className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white">OK</button>
         </div>
       </div>
     </div>
   );
 }
 
+/* ---------------- queue helpers ---------------- */
+const QKEY = "pp_contact_queue";
+const isQuotaOrTransient = (err) =>
+  err?.code === "resource-exhausted" ||
+  err?.code === "unavailable" ||
+  /quota|RESOURCE_EXHAUSTED|deadline|backoff|unavailable/i.test(err?.message || "");
+
+// local queue
+function loadQueue() { try { return JSON.parse(localStorage.getItem(QKEY) || "[]"); } catch { return []; } }
+function saveQueue(q) { try { localStorage.setItem(QKEY, JSON.stringify(q)); } catch {} }
+
+// fetch with timeout
+const fetchWithTimeout = (url, init = {}, ms = 15000) =>
+  new Promise((resolve, reject) => {
+    const ctl = new AbortController();
+    const id = setTimeout(() => { ctl.abort(); reject(new Error("soft-timeout")); }, ms);
+    fetch(url, { ...init, signal: ctl.signal })
+      .then((r) => { clearTimeout(id); resolve(r); })
+      .catch((e) => { clearTimeout(id); reject(e); });
+  });
+
 export default function ContactUs() {
   useThemeBoot();
 
-  const [user, setUser] = useState(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  const safeSet = (setter) => (...args) => { if (mounted.current) setter(...args); };
 
-  // form state
+  const [user, setUser] = useState(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // modal state
-  const [modal, setModal] = useState({
-    open: false,
-    title: "",
-    content: "",
-    variant: "info",
-  });
+  const [modal, setModal] = useState({ open:false, title:"", content:"", variant:"info" });
+  const openModal = useCallback((variant, title, content) => setModal({ open:true, title, content, variant }), []);
+  const closeModal = useCallback(() => setModal((m) => ({ ...m, open:false })), []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
   }, []);
 
-  const handleSignOut = async () => {
+  /* ---------------- Try server first when flushing queue ---------------- */
+  const postViaAPI = useCallback(async (payload) => {
+    const token = await auth.currentUser?.getIdToken?.();
+    const res = await fetchWithTimeout(
+      "/api/contact-create",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      },
+      15000
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Server error");
+    return data;
+  }, []);
+
+  const flushing = useRef(false);
+  const flushQueue = useCallback(async () => {
+    if (flushing.current) return;
+    flushing.current = true;
     try {
-      await signOut(auth);
-    } catch (e) {
-      console.error("Sign out failed:", e);
+      let q = loadQueue();
+      if (!q.length) return;
+
+      const ok = [];
+      for (const item of q) {
+        try {
+          // Prefer server
+          await postViaAPI(item.payload);
+          ok.push(item.id);
+        } catch (apiErr) {
+          try {
+            // fallback to client Firestore
+            await addDoc(collection(db, "contactMessages"), {
+              ...item.payload,
+              createdAt: serverTimestamp(),
+              status: item.payload.status || "new",
+            });
+            ok.push(item.id);
+          } catch (clientErr) {
+            if (!isQuotaOrTransient(clientErr)) {
+              // drop non-retryable
+              console.error("[contactus] drop queued item:", clientErr);
+              ok.push(item.id);
+            }
+          }
+        }
+      }
+      if (ok.length) {
+        q = loadQueue().filter((it) => !ok.includes(it.id));
+        saveQueue(q);
+      }
+    } finally {
+      flushing.current = false;
     }
-  };
+  }, [postViaAPI]);
+
+  useEffect(() => {
+    window.__flushContactQueue = () => flushQueue();
+    flushQueue();
+    const onOnline = () => flushQueue();
+    const onFocus  = () => flushQueue();
+    const onVisible= () => document.visibilityState === "visible" && flushQueue();
+    window.addEventListener("online", onOnline);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [flushQueue]);
+
+  const handleSignOut = async () => { try { await signOut(auth); } catch (e) { console.error("Sign out failed:", e); } };
 
   const validate = () => {
-    if (!name.trim()) {
-      setModal({
-        open: true,
-        title: "Missing name",
-        content: "Please enter your name.",
-        variant: "error",
-      });
-      return false;
-    }
-    if (!email.trim() || !/^\S+@\S+\.\S+$/.test(email)) {
-      setModal({
-        open: true,
-        title: "Invalid email",
-        content: "Please enter a valid email address.",
-        variant: "error",
-      });
-      return false;
-    }
-    if (!message.trim() || message.trim().length < 10) {
-      setModal({
-        open: true,
-        title: "Message too short",
-        content: "Message must be at least 10 characters.",
-        variant: "error",
-      });
-      return false;
-    }
+    if (!name.trim()) { openModal("error","Missing name","Please enter your name."); return false; }
+    if (!email.trim() || !/^\S+@\S+\.\S+$/.test(email)) { openModal("error","Invalid email","Please enter a valid email address."); return false; }
+    if (!message.trim() || message.trim().length < 10) { openModal("error","Message too short","Message must be at least 10 characters."); return false; }
     return true;
   };
 
@@ -163,54 +219,54 @@ export default function ContactUs() {
     e.preventDefault();
     if (!validate()) return;
 
-    setSubmitting(true);
+    safeSet(setSubmitting)(true);
+    const payload = {
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      message: message.trim(),
+      uid: user?.uid || null,
+      status: "new",
+    };
+
     try {
-      // Ensure Firestore instance exists
-      if (!db) throw new Error("Database not initialized. Please refresh and try again.");
-
-      await addDoc(collection(db, "contactMessages"), {
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        message: message.trim(),
-        uid: user?.uid || null,
-        createdAt: serverTimestamp(),
-        status: "new",
-      });
-
-      setName("");
-      setEmail("");
-      setMessage("");
-
-      setModal({
-        open: true,
-        title: "Message sent",
-        content: "Thanks! Your message has been sent. We’ll get back to you soon.",
-        variant: "success",
-      });
-    } catch (err) {
-      console.error("[contactus] send failed:", err);
-      const msg =
-        err?.code === "permission-denied"
-          ? "We couldn’t save your message due to permissions. Please sign in and try again."
-          : err?.message || "Could not send message. Please try again.";
-      setModal({
-        open: true,
-        title: "Couldn’t send message",
-        content: msg,
-        variant: "error",
-      });
+      // 1) Try server route first (most reliable)
+      const data = await postViaAPI(payload);
+      console.log("[contactus] saved via API:", data);
+      setName(""); setEmail(""); setMessage("");
+      openModal("success", "Message sent", "Thanks! Your message was saved successfully.");
+    } catch (apiErr) {
+      console.warn("[contactus] API failed, falling back to client:", apiErr);
+      try {
+        // 2) Fallback: direct client write
+        const ref = await addDoc(collection(db, "contactMessages"), {
+          ...payload,
+          createdAt: serverTimestamp(),
+        });
+        console.log("[contactus] saved via client:", ref.id);
+        setName(""); setEmail(""); setMessage("");
+        openModal("success", "Message sent", "Thanks! Your message was saved successfully.");
+      } catch (clientErr) {
+        console.error("[contactus] immediate write failed:", clientErr);
+        // 3) Queue if it's transient/quota/timeout; else show error
+        if (isQuotaOrTransient(clientErr) || String(clientErr?.message || "").includes("soft-timeout")) {
+          const q = loadQueue();
+          q.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, payload });
+          saveQueue(q);
+          setName(""); setEmail(""); setMessage("");
+          openModal("info", "Queued for retry", "Service is busy right now. Your message is queued and will be sent automatically soon.");
+          setTimeout(() => flushQueue(), 1500);
+        } else {
+          openModal("error", "Couldn’t send message", clientErr?.message || "Please try again.");
+        }
+      }
     } finally {
-      setSubmitting(false);
+      safeSet(setSubmitting)(false);
     }
   };
 
   return (
     <>
-      <Head>
-        <title>Contact Us – PixelProof</title>
-      </Head>
-
-      {/* Same Navbar as Utility page */}
+      <Head><title>Contact Us – PixelProof</title></Head>
       <Navbar user={user} onSignOut={handleSignOut} />
 
       <main className="min-h-screen bg-gradient-to-b from-[#f7f8ff] to-white dark:from-slate-950 dark:to-slate-900 text-slate-800 dark:text-slate-100">
@@ -224,76 +280,42 @@ export default function ContactUs() {
             </p>
           </header>
 
-          <form
-            onSubmit={onSubmit}
-            className="rounded-2xl p-6 sm:p-8 bg-white dark:bg-slate-800 ring-1 ring-black/5 dark:ring-white/10 shadow-sm"
-          >
-            {/* Name */}
+          <form onSubmit={onSubmit} className="rounded-2xl p-6 sm:p-8 bg-white dark:bg-slate-800 ring-1 ring-black/5 dark:ring-white/10 shadow-sm">
             <label className="block mb-4">
-              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">
-                Name
-              </span>
+              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">Name</span>
               <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your full name"
-                className="mt-1 w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 h-11 outline-none focus:ring-2 focus:ring-[#6c2bd9] dark:focus:ring-violet-600"
-                required
+                type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your full name"
+                className="mt-1 w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 h-11 outline-none focus:ring-2 focus:ring-[#6c2bd9] dark:focus:ring-violet-600" required
               />
             </label>
 
-            {/* Email */}
             <label className="block mb-4">
-              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">
-                Email
-              </span>
+              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">Email</span>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="mt-1 w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 h-11 outline-none focus:ring-2 focus:ring-[#6c2bd9] dark:focus:ring-violet-600"
-                required
+                type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com"
+                className="mt-1 w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 h-11 outline-none focus:ring-2 focus:ring-[#6c2bd9] dark:focus:ring-violet-600" required
               />
             </label>
 
-            {/* Message */}
             <label className="block mb-6">
-              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">
-                Message
-              </span>
+              <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">Message</span>
               <textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder="How can we help?"
+                value={message} onChange={(e) => setMessage(e.target.value)} placeholder="How can we help?"
                 rows={6}
                 className="mt-1 w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-3 outline-none focus:ring-2 focus:ring-[#6c2bd9] dark:focus:ring-violet-600 resize-y"
                 required
               />
-              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                {Math.max(0, message.length)} characters
-              </div>
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{Math.max(0, message.length)} characters</div>
             </label>
 
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex items-center justify-center h-11 px-6 rounded-xl bg-[#6c2bd9] text-white font-medium shadow-sm hover:brightness-95 disabled:opacity-60 transition"
-            >
+            <button type="submit" disabled={submitting} className="inline-flex items-center justify-center h-11 px-6 rounded-xl bg-[#6c2bd9] text-white font-medium shadow-sm hover:brightness-95 disabled:opacity-60 transition">
               {submitting ? "Sending…" : "Send message"}
             </button>
           </form>
         </section>
       </main>
 
-      {/* Custom Modal */}
-      <Modal
-        open={modal.open}
-        onClose={() => setModal((m) => ({ ...m, open: false }))}
-        title={modal.title}
-        variant={modal.variant}
-      >
+      <Modal open={modal.open} onClose={closeModal} title={modal.title} variant={modal.variant}>
         {modal.content}
       </Modal>
     </>
