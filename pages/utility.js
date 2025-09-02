@@ -14,62 +14,8 @@ const PLAN_LIMITS = { basic: 100, pro: 1000, elite: Infinity };
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
+// We still keep the short-lived cache for sub status.
 const SUB_CACHE_TTL_MS = 60 * 1000;
-
-/* ---------- THEME BOOT (migrates keys + applies class on <html>) ---------- */
-function useThemeBoot() {
-  useEffect(() => {
-    const root = document.documentElement;
-
-    const migrateOldKey = () => {
-      try {
-        const old = localStorage.getItem('pp_dark'); // '1' | '0'
-        const cur = localStorage.getItem('theme');   // 'dark' | 'light'
-        if (!cur && (old === '1' || old === '0')) {
-          localStorage.setItem('theme', old === '1' ? 'dark' : 'light');
-        }
-      } catch {}
-    };
-
-    const apply = () => {
-      try {
-        migrateOldKey();
-        let stored =
-          localStorage.getItem('theme') ||
-          localStorage.getItem('color-theme') ||
-          root.dataset.theme ||
-          '';
-        stored = stored === 'dark' ? 'dark' : stored === 'light' ? 'light' : '';
-
-        if (!stored) {
-          const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches;
-          stored = prefersDark ? 'dark' : 'light';
-          localStorage.setItem('theme', stored);
-        }
-        root.classList.toggle('dark', stored === 'dark');
-        root.dataset.theme = stored;
-      } catch {}
-    };
-
-    apply();
-
-    const onStorage = (e) => {
-      if (['theme', 'color-theme', 'pp_dark'].includes(e.key)) apply();
-    };
-    const onFocus = () => apply();
-    const onVis = () => document.visibilityState === 'visible' && apply();
-
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVis);
-
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, []);
-}
 
 /** ---------------- Helpers for monthly counters ---------------- **/
 function getOrCreateSessionId() {
@@ -92,8 +38,13 @@ function monthStr() {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${d.getFullYear()}-${mm}`;
 }
-function usedKey(uid) { return `pp_usedm_${uid}_${monthStr()}`; }
-function subCacheKey(uid) { return `pp_sub_cache_${uid}`; }
+function usedKey(uid) {
+  // per-user, per-month usage key
+  return `pp_usedm_${uid}_${monthStr()}`;
+}
+function subCacheKey(uid) {
+  return `pp_sub_cache_${uid}`;
+}
 function validateFile(file) {
   if (!file) return { ok: false, msg: 'No file' };
   if (!ALLOWED_TYPES.has(file.type)) return { ok: false, msg: 'Unsupported type' };
@@ -106,7 +57,9 @@ function useObjectUrl(file) {
     if (!file) return setUrl(null);
     const u = URL.createObjectURL(file);
     setUrl(u);
-    return () => { try { URL.revokeObjectURL(u); } catch {} };
+    return () => {
+      try { URL.revokeObjectURL(u); } catch {}
+    };
   }, [file]);
   return url;
 }
@@ -119,45 +72,23 @@ function startOfNextMonthLocal() {
   return d;
 }
 function formatTime(dt) {
-  const h = dt.getHours(), m = String(dt.getMinutes()).padStart(2, '0');
+  const h = dt.getHours(),
+    m = String(dt.getMinutes()).padStart(2, '0');
   const ampm = h >= 12 ? 'PM' : 'AM';
   const hh = ((h + 11) % 12) + 1;
-  const date = `${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')}/${dt.getFullYear()}`;
+  const date = `${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(
+    2,
+    '0'
+  )}/${dt.getFullYear()}`;
   return `${date} • ${hh}:${m} ${ampm}`;
 }
 
 export default function UtilityPage() {
-  useThemeBoot(); // 👈 apply theme globally on mount
-
   const [image1, setImage1] = useState(null);
   const [image2, setImage2] = useState(null);
   const [loading, setLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState(null);
-
-  // Button icon state; always mirror <html> class
   const [darkMode, setDarkMode] = useState(false);
-  useEffect(() => {
-    try { setDarkMode(document.documentElement.classList.contains('dark')); } catch {}
-    const onStorage = (e) => {
-      if (['theme', 'color-theme', 'pp_dark'].includes(e.key)) {
-        try { setDarkMode(document.documentElement.classList.contains('dark')); } catch {}
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-  const toggleTheme = useCallback(() => {
-    const root = document.documentElement;
-    const next = root.classList.contains('dark') ? 'light' : 'dark';
-    root.classList.toggle('dark', next === 'dark');
-    root.dataset.theme = next;
-    try {
-      localStorage.setItem('theme', next);                 // canonical
-      localStorage.setItem('pp_dark', next === 'dark' ? '1' : '0'); // backward compat
-    } catch {}
-    setDarkMode(next === 'dark');
-  }, []);
-
   const [fileMeta, setFileMeta] = useState({});
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -171,8 +102,9 @@ export default function UtilityPage() {
 
   const [fsLoaded, setFsLoaded] = useState(false);
 
+  // Subscription fetch flags
   const [subChecked, setSubChecked] = useState(false);
-  const [subLoading, setSubLoading] = useState(false);
+  const [subLoading, setSubLoading] = useState(false); // for entry loader
 
   const compareInFlight = useRef(false);
   const subReqAbort = useRef(null);
@@ -180,15 +112,34 @@ export default function UtilityPage() {
   const router = useRouter();
 
   const [modal, setModal] = useState({ open: false, title: '', message: '', actions: [] });
-  const openModal = useCallback(({ title, message, actions = [] }) => setModal({ open: true, title, message, actions }), []);
+  const openModal = useCallback(
+    ({ title, message, actions = [] }) => setModal({ open: true, title, message, actions }),
+    []
+  );
   const closeModal = useCallback(() => setModal((m) => ({ ...m, open: false })), []);
+
   const [limitModalOpen, setLimitModalOpen] = useState(false);
 
-  // -------- Auth + seeds (unchanged) --------
+  // Theme
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem('pp_dark');
+      if (s != null) setDarkMode(s === '1');
+    } catch {}
+  }, []);
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try {
+      localStorage.setItem('pp_dark', darkMode ? '1' : '0');
+    } catch {}
+  }, [darkMode]);
+
+  // Auth + seeds (cache + Firestore)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
+        // cache seed
         try {
           const raw = localStorage.getItem(subCacheKey(u.uid));
           if (raw) {
@@ -201,6 +152,7 @@ export default function UtilityPage() {
             setSubStatus(cache.status || null);
           }
         } catch {}
+        // Firestore seed for plan
         try {
           const db = getFirestore();
           const snap = await getDoc(doc(db, 'users', u.uid));
@@ -221,7 +173,7 @@ export default function UtilityPage() {
     return () => unsub();
   }, []);
 
-  // -------- Redirect after auth check (unchanged) --------
+  // Redirect after auth check
   useEffect(() => {
     if (!authChecked) return;
     if (!user) {
@@ -234,13 +186,17 @@ export default function UtilityPage() {
     }
   }, [authChecked, user, router]);
 
-  // -------- Single-session guard (unchanged) --------
+  // Single-session guard
   useEffect(() => {
     if (!user?.uid) return;
     const db = getFirestore();
     const ref = doc(db, 'users', user.uid);
     const mySessionId = getOrCreateSessionId();
-    setDoc(ref, { activeSessionId: mySessionId, sessionUpdatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+    setDoc(
+      ref,
+      { activeSessionId: mySessionId, sessionUpdatedAt: serverTimestamp() },
+      { merge: true }
+    ).catch(() => {});
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.exists() ? snap.data() : {};
       const active = data?.activeSessionId;
@@ -252,8 +208,10 @@ export default function UtilityPage() {
   }, [user?.uid]);
 
   const handleSignOut = useCallback(async () => {
-    try { await signOut(auth); router.replace('/login'); }
-    catch {
+    try {
+      await signOut(auth);
+      router.replace('/login');
+    } catch {
       openModal({
         title: 'Sign out failed',
         message: 'We could not sign you out. Please try again.',
@@ -265,7 +223,12 @@ export default function UtilityPage() {
   const goToCustomerPortal = useCallback(async () => {
     try {
       const u = auth.currentUser;
-      if (!u) { setLimitModalOpen(false); closeModal(); router.push('/login'); return; }
+      if (!u) {
+        setLimitModalOpen(false);
+        closeModal();
+        router.push('/login');
+        return;
+      }
       const idToken = await u.getIdToken();
       const res = await fetch('/api/portal', {
         method: 'POST',
@@ -273,7 +236,9 @@ export default function UtilityPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.url) {
-        setLimitModalOpen(false); closeModal(); window.location.href = data.url;
+        setLimitModalOpen(false);
+        closeModal();
+        window.location.href = data.url;
       } else {
         openModal({
           title: 'Unable to open portal',
@@ -357,9 +322,10 @@ export default function UtilityPage() {
     [router, closeModal, openModal, user?.uid]
   );
 
-  // LIVE subscription check (unchanged)
+  // LIVE subscription check on entry
   useEffect(() => {
     if (!authChecked || !user) return;
+
     const run = async () => {
       if (subReqAbort.current) { try { subReqAbort.current.abort(); } catch {} }
       const controller = new AbortController();
@@ -373,11 +339,15 @@ export default function UtilityPage() {
           signal: controller.signal,
         });
         const data = await res.json().catch(() => ({}));
+
         if (res.ok) {
           setSubActive(!!data.active);
           setSubStatus(data.status || null);
           try {
-            localStorage.setItem(subCacheKey(user.uid), JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() }));
+            localStorage.setItem(
+              subCacheKey(user.uid),
+              JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() })
+            );
           } catch {}
           if (data.plan && PLAN_LIMITS[data.plan] != null) {
             setPlanName(data.plan);
@@ -397,17 +367,20 @@ export default function UtilityPage() {
         setTimeout(() => setSubLoading(false), 150);
       }
     };
+
     run();
     return () => {
       if (subReqAbort.current) { try { subReqAbort.current.abort(); } catch {} subReqAbort.current = null; }
     };
   }, [authChecked, user]);
 
-  // Refetch on return from Stripe (unchanged)
+  // Also refetch on return from Stripe
   useEffect(() => {
     if (!user) return;
-    const hasStripeParams = typeof window !== 'undefined' && /(?:success|canceled|session_id|portal)=/.test(window.location.search);
+    const hasStripeParams =
+      typeof window !== 'undefined' && /(?:success|canceled|session_id|portal)=/.test(window.location.search);
     if (!hasStripeParams) return;
+
     (async () => {
       setSubLoading(true);
       try {
@@ -428,10 +401,15 @@ export default function UtilityPage() {
             setMonthlyLimit(null);
           }
           try {
-            localStorage.setItem(subCacheKey(user.uid), JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() }));
+            localStorage.setItem(
+              subCacheKey(user.uid),
+              JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() })
+            );
           } catch {}
         }
-      } finally { setSubLoading(false); }
+      } finally {
+        setSubLoading(false);
+      }
     })();
   }, [user]);
 
@@ -444,7 +422,6 @@ export default function UtilityPage() {
       : null;
 
   // Load USED count (this month)
-  const [usedMonthCount, setUsedMonthCount] = useState(null);
   useEffect(() => {
     if (!user?.uid) return;
     try {
@@ -452,12 +429,14 @@ export default function UtilityPage() {
       const stored = raw != null ? parseInt(raw, 10) : NaN;
       const nextUsed = Number.isFinite(stored) ? Math.max(0, stored) : 0;
       setUsedMonthCount(nextUsed);
-    } catch { setUsedMonthCount(0); }
+    } catch {
+      setUsedMonthCount(0);
+    }
   }, [user?.uid]);
 
   // Remaining for month (null = unlimited)
   const remaining = useMemo(() => {
-    if (!isFinite(effectiveLimit)) return null;
+    if (!isFinite(effectiveLimit)) return null; // unlimited
     if (typeof usedMonthCount !== 'number') return null;
     return Math.max(0, effectiveLimit - usedMonthCount);
   }, [effectiveLimit, usedMonthCount]);
@@ -465,13 +444,22 @@ export default function UtilityPage() {
   const onPickImage1 = useCallback((e) => {
     const f = e.target.files?.[0];
     const v = validateFile(f);
-    if (!v.ok) { setImage1(null); openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' }); return; }
+    if (!v.ok) {
+      setImage1(null);
+      openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' });
+      return;
+    }
     setImage1(f);
   }, [openModal]);
+
   const onPickImage2 = useCallback((e) => {
     const f = e.target.files?.[0];
     const v = validateFile(f);
-    if (!v.ok) { setImage2(null); openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' }); return; }
+    if (!v.ok) {
+      setImage2(null);
+      openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' });
+      return;
+    }
     setImage2(f);
   }, [openModal]);
 
@@ -484,13 +472,26 @@ export default function UtilityPage() {
 
   const handleCompare = useCallback(async () => {
     if (compareInFlight.current) return;
-    if (isFinite(effectiveLimit) && typeof remaining === 'number' && remaining <= 0) { setLimitModalOpen(true); return; }
-    if (!image1 || !image2) {
-      openModal({ title: 'Two images required', message: 'Please upload both the design and the development screenshot before starting a comparison.', actions: [{ label: 'Got it', onClick: () => { closeModal(); } }] });
+
+    if (isFinite(effectiveLimit) && typeof remaining === 'number' && remaining <= 0) {
+      setLimitModalOpen(true);
       return;
     }
-    const v1 = validateFile(image1), v2 = validateFile(image2);
-    if (!v1.ok || !v2.ok) { openModal({ title: 'Invalid file(s)', message: 'Use JPG, PNG, or WEBP (max 15MB).' }); return; }
+
+    if (!image1 || !image2) {
+      openModal({
+        title: 'Two images required',
+        message: 'Please upload both the design and the development screenshot before starting a comparison.',
+        actions: [{ label: 'Got it', onClick: () => { closeModal(); } }],
+      });
+      return;
+    }
+    const v1 = validateFile(image1);
+    const v2 = validateFile(image2);
+    if (!v1.ok || !v2.ok) {
+      openModal({ title: 'Invalid file(s)', message: 'Use JPG, PNG, or WEBP (max 15MB).' });
+      return;
+    }
 
     compareInFlight.current = true;
     setLoading(true);
@@ -501,11 +502,20 @@ export default function UtilityPage() {
       const formData = new FormData();
       formData.append('image1', image1);
       formData.append('image2', image2);
-      setFileMeta({ fileName1: image1.name, fileName2: image2.name, timestamp: new Date().toLocaleString() });
+      setFileMeta({
+        fileName1: image1.name,
+        fileName2: image2.name,
+        timestamp: new Date().toLocaleString(),
+      });
 
-      const response = await fetch('/api/compare', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData });
+      const response = await fetch('/api/compare', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
       const raw = await response.text();
-      let data; try { data = JSON.parse(raw); } catch { data = { error: raw || 'Unknown server response' }; }
+      let data;
+      try { data = JSON.parse(raw); } catch { data = { error: raw || 'Unknown server response' }; }
 
       if (!response.ok) {
         const code = data?.error_code || '';
@@ -516,6 +526,7 @@ export default function UtilityPage() {
       if (!data.result) throw new Error('Comparison result missing in response.');
       setComparisonResult(data.result);
 
+      // Increment USED (monthly). We still count even for unlimited, but it won't block.
       setUsedMonthCount((prev) => {
         const base = Number.isFinite(prev) ? prev : 0;
         const next = base + 1;
@@ -528,13 +539,23 @@ export default function UtilityPage() {
       setLoading(false);
       compareInFlight.current = false;
     }
-  }, [image1, image2, getFreshIdToken, showFriendlyError, user?.uid, openModal, closeModal, remaining, effectiveLimit]);
+  }, [
+    image1,
+    image2,
+    getFreshIdToken,
+    showFriendlyError,
+    user?.uid,
+    openModal,
+    closeModal,
+    remaining,
+    effectiveLimit,
+  ]);
 
   const hasActivePlan = !!subActive || (effectiveLimit === Infinity ? true : typeof effectiveLimit === 'number' && effectiveLimit > 0);
   const showNoPlanUI = authChecked && !!user && !hasActivePlan && subChecked;
 
   const usedThisMonth = useMemo(() => {
-    if (!isFinite(effectiveLimit)) return null;
+    if (!isFinite(effectiveLimit)) return null; // unlimited → no bar
     const used = Math.min(effectiveLimit || 0, Math.max(0, usedMonthCount ?? 0));
     const pct = effectiveLimit ? Math.min(100, Math.round((used / effectiveLimit) * 100)) : 0;
     return { used, pct };
@@ -544,8 +565,10 @@ export default function UtilityPage() {
 
   const fileInputBase =
     'w-full cursor-pointer file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold';
-  const fileInputStyleActive = 'file:bg-purple-600 file:text-white hover:file:bg-purple-700 hover:file:text-white';
-  const fileInputStyleInactive = 'file:bg-purple-100 file:text-purple-900 hover:file:bg-purple-200 hover:file:text-white';
+  const fileInputStyleActive =
+    'file:bg-purple-600 file:text-white hover:file:bg-purple-700 hover:file:text-white';
+  const fileInputStyleInactive =
+    'file:bg-purple-100 file:text-purple-900 hover:file:bg-purple-200 hover:file:text-white';
 
   const prev1 = useObjectUrl(image1);
   const prev2 = useObjectUrl(image2);
@@ -558,7 +581,7 @@ export default function UtilityPage() {
     <div className="min-h-screen bg-white text-gray-900 dark:bg-gray-900 dark:text-white font-sans">
       <Navbar user={user} onSignOut={handleSignOut} />
 
-      {/* Entry loader overlay */}
+      {/* Entry loader overlay (quick) */}
       {blockingLoad && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-white/70 dark:bg-black/60 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
@@ -573,7 +596,7 @@ export default function UtilityPage() {
           <h1 className="text-3xl font-bold text-purple-800 dark:text-purple-300">PixelProof</h1>
           <button
             className="bg-purple-100 dark:bg-purple-700 hover:bg-purple-200 dark:hover:bg-purple-600 p-2 rounded transition"
-            onClick={toggleTheme}
+            onClick={() => setDarkMode(!darkMode)}
             title="Toggle theme"
           >
             {darkMode ? '🌙' : '☀️'}
@@ -620,9 +643,13 @@ export default function UtilityPage() {
               type="file"
               onChange={onPickImage1}
               accept="image/jpeg,image/png,image/webp"
-              className={`${fileInputBase} ${hasActivePlan ? fileInputStyleActive : fileInputStyleInactive}`}
+              className={`${fileInputBase} ${
+                hasActivePlan ? fileInputStyleActive : fileInputStyleInactive
+              }`}
             />
-            {prev1 && <img src={prev1} alt="Preview" className="rounded shadow h-40 object-contain w-full mt-2" />}
+            {prev1 && (
+              <img src={prev1} alt="Preview" className="rounded shadow h-40 object-contain w-full mt-2" />
+            )}
           </div>
 
           <div className="border-2 border-dashed border-purple-300 p-6 rounded-lg text-center bg-white dark:bg-gray-700 hover:border-purple-500 transition transform hover:scale-[1.01]">
@@ -633,9 +660,13 @@ export default function UtilityPage() {
               type="file"
               onChange={onPickImage2}
               accept="image/jpeg,image/png,image/webp"
-              className={`${fileInputBase} ${hasActivePlan ? fileInputStyleActive : fileInputStyleInactive}`}
+              className={`${fileInputBase} ${
+                hasActivePlan ? fileInputStyleActive : fileInputStyleInactive
+              }`}
             />
-            {prev2 && <img src={prev2} alt="Preview" className="rounded shadow h-40 object-contain w-full mt-2" />}
+            {prev2 && (
+              <img src={prev2} alt="Preview" className="rounded shadow h-40 object-contain w-full mt-2" />
+            )}
           </div>
         </div>
 
@@ -652,8 +683,13 @@ export default function UtilityPage() {
 
           {showNoPlanUI && (
             <>
-              <span className="text-sm text-red-600">You don&apos;t have plan — first buy the plan.</span>
-              <button onClick={() => router.push('/')} className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition">
+              <span className="text-sm text-red-600">
+                You don&apos;t have plan — first buy the plan.
+              </span>
+              <button
+                onClick={() => router.push('/')}
+                className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition"
+              >
                 Plans
               </button>
             </>
@@ -664,7 +700,9 @@ export default function UtilityPage() {
 
         {comparisonResult && (
           <div className="mt-10 bg-gray-100 dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-xl font-bold mb-4 text-purple-800 dark:text-purple-300">Visual Bug Report</h2>
+            <h2 className="text-xl font-bold mb-4 text-purple-800 dark:text-purple-300">
+              Visual Bug Report
+            </h2>
             <ul className="text-sm mb-4">
               <li><strong>File 1:</strong> {fileMeta.fileName1}</li>
               <li><strong>File 2:</strong> {fileMeta.fileName2}</li>
@@ -680,7 +718,9 @@ export default function UtilityPage() {
 
       {/* Generic Modal */}
       <div
-        className={`fixed inset-0 z-[100] transition-opacity duration-200 ${modal.open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 z-[100] transition-opacity duration-200 ${
+          modal.open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
         onClick={closeModal}
         aria-hidden={!modal.open}
       >
@@ -702,19 +742,30 @@ export default function UtilityPage() {
                 className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  <path
+                    fillRule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clipRule="evenodd"
+                  />
                 </svg>
               </button>
             </div>
             <p className="text-sm text-gray-700 dark:text-gray-300 mb-5">{modal.message}</p>
             <div className="flex flex-wrap gap-3 justify-end">
               {modal.actions?.map((a, idx) => (
-                <button key={idx} onClick={a.onClick} className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition">
+                <button
+                  key={idx}
+                  onClick={a.onClick}
+                  className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition"
+                >
                   {a.label}
                 </button>
               ))}
               {(!modal.actions || modal.actions.length === 0) && (
-                <button onClick={closeModal} className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition">
+                <button
+                  onClick={closeModal}
+                  className="bg-purple-800 hover:bg-purple-900 text-white px-4 py-2 rounded-lg font-semibold shadow transition"
+                >
                   Close
                 </button>
               )}
@@ -723,9 +774,11 @@ export default function UtilityPage() {
         </div>
       </div>
 
-      {/* Monthly Limit Modal (unchanged UI) */}
+      {/* Monthly Limit Modal */}
       <div
-        className={`fixed inset-0 z-[110] ${limitModalOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'} transition-opacity`}
+        className={`fixed inset-0 z-[110] ${
+          limitModalOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        } transition-opacity`}
         onClick={() => setLimitModalOpen(false)}
         aria-hidden={!limitModalOpen}
       >
@@ -740,8 +793,12 @@ export default function UtilityPage() {
             }`}
           >
             <div className="flex items-center gap-3 mb-3">
-              <div className="h-10 w-10 rounded-full bg-purple-100 dark:bg-purple-800 flex items-center justify-center">⚠️</div>
-              <h3 className="text-xl font-bold text-purple-800 dark:text-purple-300">Monthly limit reached</h3>
+              <div className="h-10 w-10 rounded-full bg-purple-100 dark:bg-purple-800 flex items-center justify-center">
+                ⚠️
+              </div>
+              <h3 className="text-xl font-bold text-purple-800 dark:text-purple-300">
+                Monthly limit reached
+              </h3>
             </div>
 
             {!isFinite(effectiveLimit) ? (
@@ -753,14 +810,19 @@ export default function UtilityPage() {
                 <p className="text-sm text-gray-700 dark:text-gray-300 mb-4">
                   You’ve used all comparisons for this month on the <strong>{planName || '—'}</strong> plan.
                 </p>
+
                 <div className="mb-4">
                   <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-800 overflow-hidden">
-                    <div className="h-full bg-purple-600 dark:bg-purple-500 transition-all" style={{ width: `${(usedThisMonth?.pct ?? 100)}%` }} />
+                    <div
+                      className="h-full bg-purple-600 dark:bg-purple-500 transition-all"
+                      style={{ width: `${usedThisMonth?.pct ?? 100}%` }}
+                    />
                   </div>
                   <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
                     Used {usedThisMonth?.used ?? (effectiveLimit ?? 0)} of {isFinite(effectiveLimit) ? effectiveLimit : '∞'} this month • Resets on {resetAt}
                   </p>
                 </div>
+
                 <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-5">
                   <li>Try again next month when the counter resets.</li>
                   <li>Need more runs this month? Upgrade your plan for a higher monthly limit.</li>
@@ -769,8 +831,18 @@ export default function UtilityPage() {
             )}
 
             <div className="flex flex-wrap gap-3 justify-end">
-              <button onClick={() => setLimitModalOpen(false)} className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">OK</button>
-              <button onClick={goToCustomerPortal} className="px-4 py-2 rounded-lg bg-purple-700 hover:bg-purple-800 text-white font-semibold shadow">Upgrade plan</button>
+              <button
+                onClick={() => setLimitModalOpen(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                OK
+              </button>
+              <button
+                onClick={goToCustomerPortal}
+                className="px-4 py-2 rounded-lg bg-purple-700 hover:bg-purple-800 text-white font-semibold shadow"
+              >
+                Upgrade plan
+              </button>
             </div>
           </div>
         </div>
