@@ -88,7 +88,6 @@ function useThemeBoot() {
     const apply = () => {
       try {
         const root = document.documentElement;
-        // read from multiple possible places (utility page might use a different key)
         let stored =
           localStorage.getItem("theme") ||
           localStorage.getItem("color-theme") ||
@@ -97,7 +96,6 @@ function useThemeBoot() {
         stored = stored === "dark" ? "dark" : stored === "light" ? "light" : "";
 
         if (!stored) {
-          // fallback to system and persist for consistency
           const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
           stored = prefersDark ? "dark" : "light";
           localStorage.setItem("theme", stored);
@@ -109,9 +107,7 @@ function useThemeBoot() {
 
     apply();
 
-    const onStorage = (e) => {
-      if (["theme", "color-theme"].includes(e.key)) apply();
-    };
+    const onStorage = (e) => { if (["theme","color-theme"].includes(e.key)) apply(); };
     const onFocus = () => apply();
     const onVisible = () => document.visibilityState === "visible" && apply();
 
@@ -208,7 +204,7 @@ export default function Profile() {
 
   useEffect(()=>()=>{ if(preview) URL.revokeObjectURL(preview); },[preview]);
 
-  /* ---------------- Save name (fire-and-forget Firestore; no stuck UI) ---------------- */
+  /* ---------------- Save name ---------------- */
   const handleSave = async () => {
     if (saving) return;
     const current = auth.currentUser;
@@ -221,11 +217,9 @@ export default function Profile() {
     try {
       const newDisplayName = `${fn} ${ln}`.trim();
 
-      // Update Auth (no reload) — reflect immediately
       await updateProfile(current, { displayName: newDisplayName });
       console.log("[profile] name auth updated", { uid: current.uid, displayName: newDisplayName });
 
-      // Firestore write (do NOT await → prevents quota/lp from freezing UI)
       setDoc(
         doc(db,"users",current.uid),
         { firstName: fn, lastName: ln, displayName: newDisplayName, updatedAt: serverTimestamp() },
@@ -271,7 +265,7 @@ export default function Profile() {
 
   const cancelPreview = () => { if(preview) URL.revokeObjectURL(preview); setPreview(null); setFile(null); };
 
-  /* ---------------- Upload photo (works as before) ---------------- */
+  /* ---------------- Upload photo ---------------- */
   const handleUploadPhoto = async () => {
     if (uploading) return;
     const current = auth.currentUser;
@@ -302,8 +296,6 @@ export default function Profile() {
       await updateProfile(current, { photoURL: newURL });
       safeSet(setPhotoURL)(newURL);
       console.log("[profile] photo auth updated", { uid: current.uid, newURL });
-
-      // server already writes Firestore; client write optional (skipped)
 
       if (preview) URL.revokeObjectURL(preview);
       setPreview(null); setFile(null);
@@ -365,7 +357,7 @@ export default function Profile() {
               disabled={loading || saving}
               className={`px-3 py-2 rounded-md text-white text-sm font-medium ${loading || saving ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}
             >
-              Save
+              {saving ? "Saving..." : "Save"}
             </button>
           </div>
 
@@ -393,7 +385,7 @@ export default function Profile() {
                 </button>
                 <button onClick={handleUploadPhoto} disabled={uploading}
                         className={`px-3 py-1.5 rounded-md text-white text-sm ${uploading ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}>
-                  Use photo
+                  {uploading ? "Uploading..." : "Use photo"}
                 </button>
               </>
             )}
