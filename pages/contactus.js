@@ -5,9 +5,100 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase/config";
 import Navbar from "@/components/Navbar";
-import { Toaster, toast } from "sonner";
+
+/* ---------------- Theme boot: keep user's theme on refresh ---------------- */
+function useThemeBoot() {
+  useEffect(() => {
+    try {
+      const root = document.documentElement;
+      const stored = localStorage.getItem("theme"); // expected: "dark" | "light"
+      if (stored === "dark") root.classList.add("dark");
+      else if (stored === "light") root.classList.remove("dark");
+      // If nothing stored, leave Tailwind’s system-default behavior
+    } catch {}
+  }, []);
+}
+
+/* ---------------- Modal (animated, close icon, backdrop/Esc to close) ---------------- */
+function Modal({ open, onClose, title, children, variant = "info" }) {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setShow(true);
+    } else {
+      // small delay to let close animation play
+      const t = setTimeout(() => setShow(false), 120);
+      return () => clearTimeout(t);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") onClose?.();
+    }
+    if (open) {
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }
+  }, [open, onClose]);
+
+  if (!open && !show) return null;
+
+  const ringColor =
+    variant === "error" ? "ring-red-500/20 border-red-200 dark:border-red-800"
+    : variant === "success" ? "ring-green-600/20 border-green-200 dark:border-green-800"
+    : "ring-blue-600/20 border-gray-200 dark:border-gray-800";
+
+  return (
+    <div
+      aria-modal="true"
+      role="dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center"
+    >
+      {/* backdrop */}
+      <div
+        className={`absolute inset-0 bg-black/40 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
+        onClick={onClose}
+      />
+      {/* card */}
+      <div
+        className={`relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border shadow-xl p-6 ring-1 ${ringColor}
+                    transition-all duration-150 ${open ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}
+      >
+        {/* Close icon */}
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute top-3 right-3 rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 focus:outline-none"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+
+        {title ? (
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 pr-8">{title}</h2>
+        ) : null}
+        <div className="mt-2 text-sm text-gray-700 dark:text-gray-200">{children}</div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function ContactUs() {
+  useThemeBoot();
+
   const [user, setUser] = useState(null);
 
   // form state
@@ -15,6 +106,14 @@ export default function ContactUs() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // modal state
+  const [modal, setModal] = useState({
+    open: false,
+    title: "",
+    content: "",
+    variant: "info",
+  });
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
@@ -31,15 +130,30 @@ export default function ContactUs() {
 
   const validate = () => {
     if (!name.trim()) {
-      toast.error("Please enter your name.");
+      setModal({
+        open: true,
+        title: "Missing name",
+        content: "Please enter your name.",
+        variant: "error",
+      });
       return false;
     }
     if (!email.trim() || !/^\S+@\S+\.\S+$/.test(email)) {
-      toast.error("Please enter a valid email.");
+      setModal({
+        open: true,
+        title: "Invalid email",
+        content: "Please enter a valid email address.",
+        variant: "error",
+      });
       return false;
     }
     if (!message.trim() || message.trim().length < 10) {
-      toast.error("Message must be at least 10 characters.");
+      setModal({
+        open: true,
+        title: "Message too short",
+        content: "Message must be at least 10 characters.",
+        variant: "error",
+      });
       return false;
     }
     return true;
@@ -49,8 +163,11 @@ export default function ContactUs() {
     e.preventDefault();
     if (!validate()) return;
 
+    setSubmitting(true);
     try {
-      setSubmitting(true);
+      // Ensure Firestore instance exists
+      if (!db) throw new Error("Database not initialized. Please refresh and try again.");
+
       await addDoc(collection(db, "contactMessages"), {
         name: name.trim(),
         email: email.trim().toLowerCase(),
@@ -63,10 +180,25 @@ export default function ContactUs() {
       setName("");
       setEmail("");
       setMessage("");
-      toast.success("Thanks! Your message has been sent.");
+
+      setModal({
+        open: true,
+        title: "Message sent",
+        content: "Thanks! Your message has been sent. We’ll get back to you soon.",
+        variant: "success",
+      });
     } catch (err) {
-      console.error(err);
-      toast.error("Could not send message. Please try again.");
+      console.error("[contactus] send failed:", err);
+      const msg =
+        err?.code === "permission-denied"
+          ? "We couldn’t save your message due to permissions. Please sign in and try again."
+          : err?.message || "Could not send message. Please try again.";
+      setModal({
+        open: true,
+        title: "Couldn’t send message",
+        content: msg,
+        variant: "error",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -77,9 +209,6 @@ export default function ContactUs() {
       <Head>
         <title>Contact Us – PixelProof</title>
       </Head>
-
-      {/* Sonner toasts */}
-      <Toaster richColors position="top-right" />
 
       {/* Same Navbar as Utility page */}
       <Navbar user={user} onSignOut={handleSignOut} />
@@ -157,6 +286,16 @@ export default function ContactUs() {
           </form>
         </section>
       </main>
+
+      {/* Custom Modal */}
+      <Modal
+        open={modal.open}
+        onClose={() => setModal((m) => ({ ...m, open: false }))}
+        title={modal.title}
+        variant={modal.variant}
+      >
+        {modal.content}
+      </Modal>
     </>
   );
 }

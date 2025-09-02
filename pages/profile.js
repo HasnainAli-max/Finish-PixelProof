@@ -13,7 +13,48 @@ import ChangePassword from "@/components/ChangePassword";
 const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
 const MAX_MB = 10;
 
+/* --- Keep user's chosen theme on refresh (localStorage -> <html>.classList) --- */
+function useThemeBoot() {
+  useEffect(() => {
+    try {
+      const root = document.documentElement;
+      const stored = localStorage.getItem("theme"); // "dark" | "light" | null
+
+      if (stored === "dark") {
+        root.classList.add("dark");
+      } else if (stored === "light") {
+        root.classList.remove("dark");
+      } else {
+        // Nothing stored yet—fallback to system preference and persist it
+        const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+        if (prefersDark) {
+          root.classList.add("dark");
+          localStorage.setItem("theme", "dark");
+        } else {
+          root.classList.remove("dark");
+          localStorage.setItem("theme", "light");
+        }
+      }
+
+      // If theme changes in another tab/window, sync this page too
+      const onStorage = (e) => {
+        if (e.key === "theme") {
+          if (e.newValue === "dark") root.classList.add("dark");
+          else root.classList.remove("dark");
+        }
+      };
+      window.addEventListener("storage", onStorage);
+
+      return () => window.removeEventListener("storage", onStorage);
+    } catch {
+      // fail silently (SSR/hard privacy modes)
+    }
+  }, []);
+}
+
 export default function Profile() {
+  useThemeBoot(); // <-- ensures theme sticks after refresh
+
   const router = useRouter();
   const [user, setUser] = useState(null);
 
