@@ -9,88 +9,15 @@ import Navbar from '../components/Navbar';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ReactMarkdown from 'react-markdown';
 
-const PLAN_LIMITS = { basic: 1, pro: 2, elite: 3 };
+/** ---------------- PLAN LIMITS (monthly) ---------------- **/
+const PLAN_LIMITS = { basic: 100, pro: 1000, elite: Infinity };
+
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
-// We still write a short-lived cache, but we DO NOT rely on it for initial render.
-// This avoids the "buy a plan" flicker after payment.
+// We still keep the short-lived cache for sub status.
 const SUB_CACHE_TTL_MS = 60 * 1000;
 
-/* -------------------- THEME HELPERS (GLOBAL) -------------------- */
-function applyThemeToDOM(isDark) {
-  try {
-    const root = document.documentElement;
-    root.classList.toggle('dark', !!isDark);
-    root.dataset.theme = isDark ? 'dark' : 'light';
-  } catch {}
-}
-function readInitialTheme() {
-  try {
-    // 1) Our boolean flag, if present
-    const raw = localStorage.getItem('pp_dark_bool');
-    if (raw === 'true' || raw === 'false') return raw === 'true';
-
-    // 2) Common string keys used elsewhere in the app
-    const stored =
-      localStorage.getItem('theme') ||
-      localStorage.getItem('color-theme') ||
-      (localStorage.getItem('pp_dark') === '1' ? 'dark' : '');
-
-    if (stored === 'dark') return true;
-    if (stored === 'light') return false;
-
-    // 3) Fallback to system
-    const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches;
-    return !!prefersDark;
-  } catch {
-    return false;
-  }
-}
-function persistTheme(isDark) {
-  try {
-    localStorage.setItem('pp_dark_bool', String(!!isDark));       // boolean flag you asked for
-    localStorage.setItem('pp_dark', isDark ? '1' : '0');          // legacy key in your codebase
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');     // used by other pages
-    localStorage.setItem('color-theme', isDark ? 'dark' : 'light');
-  } catch {}
-}
-function useGlobalTheme() {
-  const [darkMode, setDarkMode] = useState(false);
-
-  // Boot: read from storage / system once
-  useEffect(() => {
-    const initial = readInitialTheme();
-    setDarkMode(initial);
-    applyThemeToDOM(initial);
-
-    // Sync if another tab changes it
-    const onStorage = (e) => {
-      if (!e.key) return;
-      if (
-        e.key === 'pp_dark_bool' ||
-        e.key === 'pp_dark' ||
-        e.key === 'theme' ||
-        e.key === 'color-theme'
-      ) {
-        const next = readInitialTheme();
-        setDarkMode(next);
-        applyThemeToDOM(next);
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
-  // Persist & apply whenever it changes here
-  useEffect(() => {
-    persistTheme(darkMode);
-    applyThemeToDOM(darkMode);
-  }, [darkMode]);
-
-  return [darkMode, setDarkMode];
-}
-
-/* -------------------- UTIL HELPERS -------------------- */
+/** ---------------- Helpers for monthly counters ---------------- **/
 function getOrCreateSessionId() {
   try {
     let id = localStorage.getItem('pp_session_id');
@@ -106,15 +33,14 @@ function getOrCreateSessionId() {
     return 'fallback-session';
   }
 }
-function todayStr() {
+function monthStr() {
   const d = new Date();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
+  return `${d.getFullYear()}-${mm}`;
 }
-// Used-count is authoritative for the day (prevents downgrade loophole)
 function usedKey(uid) {
-  return `pp_used_${uid}_${todayStr()}`;
+  // per-user, per-month usage key
+  return `pp_usedm_${uid}_${monthStr()}`;
 }
 function subCacheKey(uid) {
   return `pp_sub_cache_${uid}`;
@@ -132,17 +58,17 @@ function useObjectUrl(file) {
     const u = URL.createObjectURL(file);
     setUrl(u);
     return () => {
-      try {
-        URL.revokeObjectURL(u);
-      } catch {}
+      try { URL.revokeObjectURL(u); } catch {}
     };
   }, [file]);
   return url;
 }
 
-function nextMidnightLocal() {
+function startOfNextMonthLocal() {
   const d = new Date();
-  d.setHours(24, 0, 0, 0);
+  d.setDate(1);
+  d.setMonth(d.getMonth() + 1);
+  d.setHours(0, 0, 0, 0);
   return d;
 }
 function formatTime(dt) {
@@ -162,17 +88,14 @@ export default function UtilityPage() {
   const [image2, setImage2] = useState(null);
   const [loading, setLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState(null);
-
-  // 🔄 Global theme state (boolean flag stored in localStorage)
-  const [darkMode, setDarkMode] = useGlobalTheme();
-
+  const [darkMode, setDarkMode] = useState(false);
   const [fileMeta, setFileMeta] = useState({});
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
   const [planName, setPlanName] = useState(null);
-  const [dailyLimit, setDailyLimit] = useState(null);
-  const [usedTodayCount, setUsedTodayCount] = useState(null);
+  const [monthlyLimit, setMonthlyLimit] = useState(null);
+  const [usedMonthCount, setUsedMonthCount] = useState(null);
 
   const [subActive, setSubActive] = useState(false);
   const [subStatus, setSubStatus] = useState(null);
@@ -197,12 +120,26 @@ export default function UtilityPage() {
 
   const [limitModalOpen, setLimitModalOpen] = useState(false);
 
-  // Auth + quick seeds (cache + Firestore for banner/no-flicker)
+  // Theme
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem('pp_dark');
+      if (s != null) setDarkMode(s === '1');
+    } catch {}
+  }, []);
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try {
+      localStorage.setItem('pp_dark', darkMode ? '1' : '0');
+    } catch {}
+  }, [darkMode]);
+
+  // Auth + seeds (cache + Firestore)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
-        // Read cache only to prefill banner quickly (we will still do a live fetch)
+        // cache seed
         try {
           const raw = localStorage.getItem(subCacheKey(u.uid));
           if (raw) {
@@ -210,20 +147,20 @@ export default function UtilityPage() {
             if (typeof cache?.active === 'boolean') setSubActive(!!cache.active);
             if (cache?.plan && PLAN_LIMITS[cache.plan] != null) {
               setPlanName(cache.plan);
-              setDailyLimit((dl) => (typeof dl === 'number' ? dl : PLAN_LIMITS[cache.plan]));
+              setMonthlyLimit((ml) => (typeof ml === 'number' || ml === Infinity ? ml : PLAN_LIMITS[cache.plan]));
             }
             setSubStatus(cache.status || null);
           }
         } catch {}
-        // Firestore seed for plan name (prevents flicker)
+        // Firestore seed for plan
         try {
           const db = getFirestore();
           const snap = await getDoc(doc(db, 'users', u.uid));
           const d = snap.exists() ? snap.data() : {};
           const rawPlan = String(d?.activePlan || d?.plan || d?.tier || '').toLowerCase();
-          const max = PLAN_LIMITS[rawPlan] ?? 0;
+          const max = PLAN_LIMITS[rawPlan] ?? null;
           setPlanName((p) => p || rawPlan || null);
-          if (max) setDailyLimit((dl) => (typeof dl === 'number' ? dl : max));
+          if (max != null) setMonthlyLimit((ml) => (typeof ml === 'number' || ml === Infinity ? ml : max));
         } catch {} finally {
           setFsLoaded(true);
         }
@@ -241,15 +178,11 @@ export default function UtilityPage() {
     if (!authChecked) return;
     if (!user) {
       let justSignedUp = false;
-      try {
-        justSignedUp = !!localStorage.getItem('justSignedUp');
-      } catch {}
+      try { justSignedUp = !!localStorage.getItem('justSignedUp'); } catch {}
       if (justSignedUp) return;
       router.replace('/login');
     } else {
-      try {
-        localStorage.removeItem('justSignedUp');
-      } catch {}
+      try { localStorage.removeItem('justSignedUp'); } catch {}
     }
   }, [authChecked, user, router]);
 
@@ -282,15 +215,7 @@ export default function UtilityPage() {
       openModal({
         title: 'Sign out failed',
         message: 'We could not sign you out. Please try again.',
-        actions: [
-          {
-            label: 'Try Again',
-            onClick: () => {
-              closeModal();
-              handleSignOut();
-            },
-          },
-        ],
+        actions: [{ label: 'Try Again', onClick: () => { closeModal(); handleSignOut(); } }],
       });
     }
   }, [router, openModal, closeModal]);
@@ -318,44 +243,25 @@ export default function UtilityPage() {
         openModal({
           title: 'Unable to open portal',
           message: data?.error || 'We could not open the customer portal. Please try again.',
-          actions: [
-            {
-              label: 'Try Again',
-              onClick: () => {
-                closeModal();
-                goToCustomerPortal();
-              },
-            },
-          ],
+          actions: [{ label: 'Try Again', onClick: () => { closeModal(); goToCustomerPortal(); } }],
         });
       }
     } catch {
       openModal({
         title: 'Unable to open portal',
         message: 'A network error occurred. Please check your connection and try again.',
-        actions: [
-          {
-            label: 'Try Again',
-            onClick: () => {
-              closeModal();
-              goToCustomerPortal();
-            },
-          },
-        ],
+        actions: [{ label: 'Try Again', onClick: () => { closeModal(); goToCustomerPortal(); } }],
       });
     }
   }, [router, openModal, closeModal]);
 
-  // Friendly error + zero-remaining helper (sets used = limit)
   const showFriendlyError = useCallback(
     ({ status, code, msg }) => {
       const m = String(msg || '').toLowerCase();
       const setUsedToLimit = () => {
-        if (typeof effectiveLimit === 'number') {
-          setUsedTodayCount(effectiveLimit);
-          try {
-            if (user?.uid) localStorage.setItem(usedKey(user.uid), String(effectiveLimit));
-          } catch {}
+        if (isFinite(effectiveLimit)) {
+          setUsedMonthCount(effectiveLimit);
+          try { if (user?.uid) localStorage.setItem(usedKey(user.uid), String(effectiveLimit)); } catch {}
         }
       };
 
@@ -363,15 +269,7 @@ export default function UtilityPage() {
         openModal({
           title: 'Session expired',
           message: 'Your session has expired. Please sign in again to continue.',
-          actions: [
-            {
-              label: 'Sign In',
-              onClick: () => {
-                closeModal();
-                router.push('/login');
-              },
-            },
-          ],
+          actions: [{ label: 'Sign In', onClick: () => { closeModal(); router.push('/login'); } }],
         });
         return;
       }
@@ -379,20 +277,12 @@ export default function UtilityPage() {
         openModal({
           title: 'No active subscription',
           message: 'You do not have an active plan. To run comparisons, please choose a plan.',
-          actions: [
-            {
-              label: 'View Plans',
-              onClick: () => {
-                closeModal();
-                router.push('/');
-              },
-            },
-          ],
+          actions: [{ label: 'View Plans', onClick: () => { closeModal(); router.push('/'); } }],
         });
         setUsedToLimit();
         return;
       }
-      if (status === 429 || code === 'LIMIT_EXCEEDED' || /daily limit/.test(m)) {
+      if (status === 429 || code === 'LIMIT_EXCEEDED' || /limit/.test(m)) {
         setLimitModalOpen(true);
         setUsedToLimit();
         return;
@@ -401,8 +291,7 @@ export default function UtilityPage() {
         if (/both images are required/i.test(m)) {
           openModal({
             title: 'Two images required',
-            message:
-              'Please upload both the design and the development screenshot before starting a comparison.',
+            message: 'Please upload both the design and the development screenshot before starting a comparison.',
             actions: [{ label: 'Got it', onClick: () => { closeModal(); } }],
           });
           return;
@@ -430,20 +319,15 @@ export default function UtilityPage() {
         actions: [{ label: 'Retry', onClick: () => { closeModal(); } }],
       });
     },
-    // effectiveLimit is derived; safe to omit to avoid re-creating handler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [router, closeModal, openModal, user?.uid]
   );
 
-  // 🔒 Force a LIVE subscription-status fetch on entry (no TTL, no stale reads).
-  // Shows a small blocking loader so the UI never flashes "buy a plan" incorrectly.
+  // LIVE subscription check on entry
   useEffect(() => {
     if (!authChecked || !user) return;
 
     const run = async () => {
-      if (subReqAbort.current) {
-        try { subReqAbort.current.abort(); } catch {}
-      }
+      if (subReqAbort.current) { try { subReqAbort.current.abort(); } catch {} }
       const controller = new AbortController();
       subReqAbort.current = controller;
       setSubLoading(true);
@@ -462,21 +346,15 @@ export default function UtilityPage() {
           try {
             localStorage.setItem(
               subCacheKey(user.uid),
-              JSON.stringify({
-                active: !!data.active,
-                plan: data.plan || null,
-                status: data.status || null,
-                t: Date.now(),
-              })
+              JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() })
             );
           } catch {}
           if (data.plan && PLAN_LIMITS[data.plan] != null) {
             setPlanName(data.plan);
-            setDailyLimit(PLAN_LIMITS[data.plan]);
+            setMonthlyLimit(PLAN_LIMITS[data.plan]);
           } else {
-            // if no plan, clear planName/dailyLimit
             setPlanName(null);
-            setDailyLimit(null);
+            setMonthlyLimit(null);
           }
         } else {
           console.warn('subscription-status error:', data?.error || res.status);
@@ -486,26 +364,21 @@ export default function UtilityPage() {
       } finally {
         subReqAbort.current = null;
         setSubChecked(true);
-        // tiny delay keeps UX smooth without feeling laggy
         setTimeout(() => setSubLoading(false), 150);
       }
     };
 
     run();
     return () => {
-      if (subReqAbort.current) {
-        try { subReqAbort.current.abort(); } catch {}
-        subReqAbort.current = null;
-      }
+      if (subReqAbort.current) { try { subReqAbort.current.abort(); } catch {} subReqAbort.current = null; }
     };
   }, [authChecked, user]);
 
-  // Also refetch on return from Stripe (if URL has success/canceled/session_id)
+  // Also refetch on return from Stripe
   useEffect(() => {
     if (!user) return;
     const hasStripeParams =
-      typeof window !== 'undefined' &&
-      /(?:success|canceled|session_id|portal)=/.test(window.location.search);
+      typeof window !== 'undefined' && /(?:success|canceled|session_id|portal)=/.test(window.location.search);
     if (!hasStripeParams) return;
 
     (async () => {
@@ -522,20 +395,15 @@ export default function UtilityPage() {
           setSubStatus(data.status || null);
           if (data.plan && PLAN_LIMITS[data.plan] != null) {
             setPlanName(data.plan);
-            setDailyLimit(PLAN_LIMITS[data.plan]);
+            setMonthlyLimit(PLAN_LIMITS[data.plan]);
           } else {
             setPlanName(null);
-            setDailyLimit(null);
+            setMonthlyLimit(null);
           }
           try {
             localStorage.setItem(
               subCacheKey(user.uid),
-              JSON.stringify({
-                active: !!data.active,
-                plan: data.plan || null,
-                status: data.status || null,
-                t: Date.now(),
-              })
+              JSON.stringify({ active: !!data.active, plan: data.plan || null, status: data.status || null, t: Date.now() })
             );
           } catch {}
         }
@@ -545,80 +413,67 @@ export default function UtilityPage() {
     })();
   }, [user]);
 
-  // Compute limit from current plan
+  /** ---------- Effective limit (monthly) ---------- **/
   const effectiveLimit =
-    typeof dailyLimit === 'number' && dailyLimit >= 0
-      ? dailyLimit
+    typeof monthlyLimit === 'number' || monthlyLimit === Infinity
+      ? monthlyLimit
       : planName && PLAN_LIMITS[planName] != null
       ? PLAN_LIMITS[planName]
       : null;
 
-  // Load USED count for today (per user)
+  // Load USED count (this month)
   useEffect(() => {
     if (!user?.uid) return;
     try {
       const raw = localStorage.getItem(usedKey(user.uid));
       const stored = raw != null ? parseInt(raw, 10) : NaN;
       const nextUsed = Number.isFinite(stored) ? Math.max(0, stored) : 0;
-      setUsedTodayCount(nextUsed);
+      setUsedMonthCount(nextUsed);
     } catch {
-      setUsedTodayCount(0);
+      setUsedMonthCount(0);
     }
   }, [user?.uid]);
 
-  // Remaining derived from used + limit
+  // Remaining for month (null = unlimited)
   const remaining = useMemo(() => {
-    if (typeof effectiveLimit !== 'number' || typeof usedTodayCount !== 'number') return null;
-    return Math.max(0, effectiveLimit - usedTodayCount);
-  }, [effectiveLimit, usedTodayCount]);
+    if (!isFinite(effectiveLimit)) return null; // unlimited
+    if (typeof usedMonthCount !== 'number') return null;
+    return Math.max(0, effectiveLimit - usedMonthCount);
+  }, [effectiveLimit, usedMonthCount]);
 
-  const onPickImage1 = useCallback(
-    (e) => {
-      const f = e.target.files?.[0];
-      const v = validateFile(f);
-      if (!v.ok) {
-        setImage1(null);
-        openModal({
-          title: 'Invalid file',
-          message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.',
-        });
-        return;
-      }
-      setImage1(f);
-    },
-    [openModal]
-  );
-  const onPickImage2 = useCallback(
-    (e) => {
-      const f = e.target.files?.[0];
-      const v = validateFile(f);
-      if (!v.ok) {
-        setImage2(null);
-        openModal({
-          title: 'Invalid file',
-          message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.',
-        });
-        return;
-      }
-      setImage2(f);
-    },
-    [openModal]
-  );
+  const onPickImage1 = useCallback((e) => {
+    const f = e.target.files?.[0];
+    const v = validateFile(f);
+    if (!v.ok) {
+      setImage1(null);
+      openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' });
+      return;
+    }
+    setImage1(f);
+  }, [openModal]);
+
+  const onPickImage2 = useCallback((e) => {
+    const f = e.target.files?.[0];
+    const v = validateFile(f);
+    if (!v.ok) {
+      setImage2(null);
+      openModal({ title: 'Invalid file', message: v.msg === 'Unsupported type' ? 'Use JPG, PNG, or WEBP files.' : 'Max size is 15MB.' });
+      return;
+    }
+    setImage2(f);
+  }, [openModal]);
 
   const getFreshIdToken = useCallback(async () => {
     const u = auth.currentUser;
     if (!u) throw new Error('Please sign in first.');
-    try {
-      return await u.getIdToken();
-    } catch {
-      return await u.getIdToken(true);
-    }
+    try { return await u.getIdToken(); }
+    catch { return await u.getIdToken(true); }
   }, []);
 
   const handleCompare = useCallback(async () => {
     if (compareInFlight.current) return;
 
-    if (typeof remaining === 'number' && remaining <= 0) {
+    if (isFinite(effectiveLimit) && typeof remaining === 'number' && remaining <= 0) {
       setLimitModalOpen(true);
       return;
     }
@@ -626,8 +481,7 @@ export default function UtilityPage() {
     if (!image1 || !image2) {
       openModal({
         title: 'Two images required',
-        message:
-          'Please upload both the design and the development screenshot before starting a comparison.',
+        message: 'Please upload both the design and the development screenshot before starting a comparison.',
         actions: [{ label: 'Got it', onClick: () => { closeModal(); } }],
       });
       return;
@@ -661,11 +515,7 @@ export default function UtilityPage() {
       });
       const raw = await response.text();
       let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        data = { error: raw || 'Unknown server response' };
-      }
+      try { data = JSON.parse(raw); } catch { data = { error: raw || 'Unknown server response' }; }
 
       if (!response.ok) {
         const code = data?.error_code || '';
@@ -676,13 +526,11 @@ export default function UtilityPage() {
       if (!data.result) throw new Error('Comparison result missing in response.');
       setComparisonResult(data.result);
 
-      // Increment USED (not remaining)
-      setUsedTodayCount((prev) => {
+      // Increment USED (monthly). We still count even for unlimited, but it won't block.
+      setUsedMonthCount((prev) => {
         const base = Number.isFinite(prev) ? prev : 0;
         const next = base + 1;
-        try {
-          if (user?.uid) localStorage.setItem(usedKey(user.uid), String(next));
-        } catch {}
+        try { if (user?.uid) localStorage.setItem(usedKey(user.uid), String(next)); } catch {}
         return next;
       });
     } catch (err) {
@@ -700,23 +548,20 @@ export default function UtilityPage() {
     openModal,
     closeModal,
     remaining,
+    effectiveLimit,
   ]);
 
-  // Plan flags
-  const hasActivePlan = !!subActive || (typeof effectiveLimit === 'number' && effectiveLimit > 0);
-
-  // 👇 No "buy a plan" banner until LIVE subscription check is done (prevents flicker).
+  const hasActivePlan = !!subActive || (effectiveLimit === Infinity ? true : typeof effectiveLimit === 'number' && effectiveLimit > 0);
   const showNoPlanUI = authChecked && !!user && !hasActivePlan && subChecked;
 
-  // For modal display
-  const usedToday = useMemo(() => {
-    if (typeof effectiveLimit !== 'number') return null;
-    const used = Math.min(effectiveLimit, Math.max(0, usedTodayCount ?? 0));
+  const usedThisMonth = useMemo(() => {
+    if (!isFinite(effectiveLimit)) return null; // unlimited → no bar
+    const used = Math.min(effectiveLimit || 0, Math.max(0, usedMonthCount ?? 0));
     const pct = effectiveLimit ? Math.min(100, Math.round((used / effectiveLimit) * 100)) : 0;
     return { used, pct };
-  }, [usedTodayCount, effectiveLimit]);
+  }, [usedMonthCount, effectiveLimit]);
 
-  const resetAt = useMemo(() => formatTime(nextMidnightLocal()), []);
+  const resetAt = useMemo(() => formatTime(startOfNextMonthLocal()), []);
 
   const fileInputBase =
     'w-full cursor-pointer file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold';
@@ -728,7 +573,6 @@ export default function UtilityPage() {
   const prev1 = useObjectUrl(image1);
   const prev2 = useObjectUrl(image2);
 
-  // 🔄 Entry loader: block UI only until we finish the LIVE sub fetch.
   const blockingLoad = !!user && subLoading && !subChecked;
 
   if (!user) return <></>;
@@ -752,7 +596,7 @@ export default function UtilityPage() {
           <h1 className="text-3xl font-bold text-purple-800 dark:text-purple-300">PixelProof</h1>
           <button
             className="bg-purple-100 dark:bg-purple-700 hover:bg-purple-200 dark:hover:bg-purple-600 p-2 rounded transition"
-            onClick={() => setDarkMode((d) => !d)}
+            onClick={() => setDarkMode(!darkMode)}
             title="Toggle theme"
           >
             {darkMode ? '🌙' : '☀️'}
@@ -766,9 +610,11 @@ export default function UtilityPage() {
         </p>
 
         <p className="text-sm text-gray-700 dark:text-gray-300 mb-6">
-          Remaining comparisons today:{' '}
+          Remaining comparisons <strong>this month</strong>:{' '}
           <strong>
-            {typeof remaining === 'number' && typeof effectiveLimit === 'number'
+            {!isFinite(effectiveLimit)
+              ? 'Unlimited'
+              : typeof remaining === 'number' && typeof effectiveLimit === 'number'
               ? `${remaining}/${effectiveLimit}`
               : '—'}
           </strong>
@@ -827,7 +673,6 @@ export default function UtilityPage() {
         <div className="mt-10 flex items-center gap-4 flex-wrap">
           <button
             onClick={handleCompare}
-            // IMPORTANT: plan-based disable only (plus loading/images)
             disabled={!hasActivePlan || loading || !image1 || !image2}
             className={`bg-purple-800 hover:bg-purple-900 text-white px-6 py-3 rounded-lg font-semibold shadow transition ${
               !hasActivePlan || loading || !image1 || !image2 ? 'opacity-60 cursor-not-allowed' : ''
@@ -859,15 +704,9 @@ export default function UtilityPage() {
               Visual Bug Report
             </h2>
             <ul className="text-sm mb-4">
-              <li>
-                <strong>File 1:</strong> {fileMeta.fileName1}
-              </li>
-              <li>
-                <strong>File 2:</strong> {fileMeta.fileName2}
-              </li>
-              <li>
-                <strong>Timestamp:</strong> {fileMeta.timestamp}
-              </li>
+              <li><strong>File 1:</strong> {fileMeta.fileName1}</li>
+              <li><strong>File 2:</strong> {fileMeta.fileName2}</li>
+              <li><strong>Timestamp:</strong> {fileMeta.timestamp}</li>
             </ul>
             <div className="prose dark:prose-invert max-w-none text-sm">
               <ReactMarkdown>{comparisonResult}</ReactMarkdown>
@@ -877,7 +716,7 @@ export default function UtilityPage() {
         )}
       </div>
 
-      {/* Generic Modal (existing) */}
+      {/* Generic Modal */}
       <div
         className={`fixed inset-0 z-[100] transition-opacity duration-200 ${
           modal.open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
@@ -935,7 +774,7 @@ export default function UtilityPage() {
         </div>
       </div>
 
-      {/* NEW: Custom Daily Limit Modal */}
+      {/* Monthly Limit Modal */}
       <div
         className={`fixed inset-0 z-[110] ${
           limitModalOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
@@ -958,31 +797,38 @@ export default function UtilityPage() {
                 ⚠️
               </div>
               <h3 className="text-xl font-bold text-purple-800 dark:text-purple-300">
-                Daily limit reached
+                Monthly limit reached
               </h3>
             </div>
 
-            <p className="text-sm text-gray-700 dark:text-gray-300 mb-4">
-              You’ve used all comparisons for today on the <strong>{planName || '—'}</strong> plan.
-            </p>
-
-            <div className="mb-4">
-              <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-800 overflow-hidden">
-                <div
-                  className="h-full bg-purple-600 dark:bg-purple-500 transition-all"
-                  style={{ width: `${usedToday?.pct ?? 100}%` }}
-                />
-              </div>
-              <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                Used {usedToday?.used ?? (effectiveLimit ?? 0)} of {effectiveLimit ?? '—'} today • Resets at {resetAt}
+            {!isFinite(effectiveLimit) ? (
+              <p className="text-sm text-gray-700 dark:text-gray-300 mb-4">
+                You’re on the unlimited plan. This notice should not appear—please refresh.
               </p>
-            </div>
+            ) : (
+              <>
+                <p className="text-sm text-gray-700 dark:text-gray-300 mb-4">
+                  You’ve used all comparisons for this month on the <strong>{planName || '—'}</strong> plan.
+                </p>
 
-            <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-5">
-              <li>Try again tomorrow when the counter resets.</li>
-              <li>Need more runs today? Upgrade your plan for a higher daily limit.</li>
-              <li>Tip: Batch related screens into a single session to save runs.</li>
-            </ul>
+                <div className="mb-4">
+                  <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                    <div
+                      className="h-full bg-purple-600 dark:bg-purple-500 transition-all"
+                      style={{ width: `${usedThisMonth?.pct ?? 100}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                    Used {usedThisMonth?.used ?? (effectiveLimit ?? 0)} of {isFinite(effectiveLimit) ? effectiveLimit : '∞'} this month • Resets on {resetAt}
+                  </p>
+                </div>
+
+                <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-5">
+                  <li>Try again next month when the counter resets.</li>
+                  <li>Need more runs this month? Upgrade your plan for a higher monthly limit.</li>
+                </ul>
+              </>
+            )}
 
             <div className="flex flex-wrap gap-3 justify-end">
               <button
