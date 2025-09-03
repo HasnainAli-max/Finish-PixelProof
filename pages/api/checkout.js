@@ -10,8 +10,8 @@ const PRICE_MAP = {
 
 // Resolve BASE_URL for redirects (dev vs prod)
 function resolveBaseUrl(req) {
-  const devDefault  = process.env.NEXT_PUBLIC_DEV_URL || 'http://localhost:3000';
-  const prodDefault = process.env.NEXT_PUBLIC_APP_URL || 'https://finalpixel.vercel.app';
+  const devDefault  = process.env.NEXT_PUBLIC_DEV_URL || 'https://finish-pixel-proof.vercel.app/';
+  const prodDefault = process.env.NEXT_PUBLIC_APP_URL || 'https://finish-pixel-proof.vercel.app/';
 
   const origin = req.headers?.origin || '';
   if (/^http:\/\/localhost(?::\d+)?/i.test(origin)) return origin;
